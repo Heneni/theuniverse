@@ -41,6 +41,11 @@ pub struct CsvData {
     pub top_tracks_short: Vec<String>,
     pub top_tracks_medium: Vec<String>,
     pub top_tracks_long: Vec<String>,
+    // New fields for CSV-only mode
+    pub artist_first_seen: FnvHashMap<String, DateTime<Utc>>,
+    pub track_first_seen: FnvHashMap<String, DateTime<Utc>>,
+    pub genre_history: Vec<(DateTime<Utc>, FnvHashMap<String, f32>)>,
+    pub artist_relationships: FnvHashMap<String, Vec<String>>,
 }
 
 lazy_static::lazy_static! {
@@ -110,6 +115,15 @@ pub async fn load_csv_data() -> Result<(), String> {
     let artists = build_artists(&artist_play_counts, &artist_genres_map);
     let tracks = build_tracks(&track_play_counts);
 
+    // Calculate first seen dates for timeline
+    let (artist_first_seen, track_first_seen) = calculate_first_seen(&entries);
+    
+    // Calculate genre history
+    let genre_history = calculate_genre_history(&entries);
+    
+    // Calculate artist relationships based on co-occurrence
+    let artist_relationships = calculate_artist_relationships(&entries);
+
     let csv_data = CsvData {
         entries,
         artists,
@@ -120,10 +134,16 @@ pub async fn load_csv_data() -> Result<(), String> {
         top_tracks_short,
         top_tracks_medium,
         top_tracks_long,
+        artist_first_seen,
+        track_first_seen,
+        genre_history,
+        artist_relationships,
     };
 
+    info!("Successfully loaded CSV data with {} entries, {} artists, {} tracks", 
+          csv_data.entries.len(), csv_data.artists.len(), csv_data.tracks.len());
+    
     *CSV_DATA.write().await = Some(Arc::new(csv_data));
-    info!("Successfully loaded CSV data");
     Ok(())
 }
 
@@ -272,6 +292,127 @@ fn build_tracks(track_play_counts: &FnvHashMap<(String, String), u64>) -> FnvHas
     }
     
     tracks
+}
+
+fn calculate_first_seen(
+    entries: &[ListeningEntry],
+) -> (FnvHashMap<String, DateTime<Utc>>, FnvHashMap<String, DateTime<Utc>>) {
+    let mut artist_first_seen: FnvHashMap<String, DateTime<Utc>> = FnvHashMap::default();
+    let mut track_first_seen: FnvHashMap<String, DateTime<Utc>> = FnvHashMap::default();
+
+    for entry in entries {
+        let artist_id = format!("csv_{}", entry.artist_name.replace(' ', "_").to_lowercase());
+        let track_key = format!("{} - {}", entry.track_name, entry.artist_name);
+        let track_id = format!("csv_{}", track_key.replace(' ', "_").to_lowercase());
+
+        artist_first_seen
+            .entry(artist_id)
+            .or_insert(entry.timestamp);
+        track_first_seen
+            .entry(track_id)
+            .or_insert(entry.timestamp);
+    }
+
+    (artist_first_seen, track_first_seen)
+}
+
+fn calculate_genre_history(entries: &[ListeningEntry]) -> Vec<(DateTime<Utc>, FnvHashMap<String, f32>)> {
+    if entries.is_empty() {
+        return Vec::new();
+    }
+
+    let mut history = Vec::new();
+    let mut genre_counts: FnvHashMap<String, f32> = FnvHashMap::default();
+    
+    // Group by month
+    let first_timestamp = entries.first().unwrap().timestamp;
+    let mut current_month_start = first_timestamp
+        .date_naive()
+        .and_hms_opt(0, 0, 0)
+        .map(|dt| dt.and_utc())
+        .unwrap();
+    
+    for entry in entries {
+        // Check if we've moved to a new month
+        let entry_month_start = entry.timestamp
+            .date_naive()
+            .and_hms_opt(0, 0, 0)
+            .map(|dt| dt.and_utc())
+            .unwrap();
+        
+        if entry_month_start > current_month_start + chrono::Duration::days(30) {
+            // Save current month's data
+            if !genre_counts.is_empty() {
+                history.push((current_month_start, genre_counts.clone()));
+            }
+            current_month_start = entry_month_start;
+            genre_counts.clear();
+        }
+        
+        // Accumulate genre counts for this month
+        for genre in &entry.genres {
+            *genre_counts.entry(genre.clone()).or_insert(0.0) += entry.ms_played as f32;
+        }
+    }
+    
+    // Add final month
+    if !genre_counts.is_empty() {
+        history.push((current_month_start, genre_counts));
+    }
+    
+    history
+}
+
+fn calculate_artist_relationships(entries: &[ListeningEntry]) -> FnvHashMap<String, Vec<String>> {
+    let mut relationships: FnvHashMap<String, FnvHashMap<String, u32>> = FnvHashMap::default();
+    
+    // Use a sliding window to find artists that are listened to close together
+    let window_size = 50; // Consider artists within 50 songs as related
+    
+    for window_start in 0..entries.len() {
+        let window_end = (window_start + window_size).min(entries.len());
+        let window = &entries[window_start..window_end];
+        
+        // Get unique artists in this window
+        let mut artists_in_window: FnvHashMap<String, bool> = FnvHashMap::default();
+        for entry in window {
+            let artist_id = format!("csv_{}", entry.artist_name.replace(' ', "_").to_lowercase());
+            artists_in_window.insert(artist_id, true);
+        }
+        
+        // For each pair of artists in the window, increase their relationship score
+        let artists: Vec<String> = artists_in_window.keys().cloned().collect();
+        for i in 0..artists.len() {
+            for j in (i + 1)..artists.len() {
+                let artist1 = &artists[i];
+                let artist2 = &artists[j];
+                
+                *relationships
+                    .entry(artist1.clone())
+                    .or_default()
+                    .entry(artist2.clone())
+                    .or_insert(0) += 1;
+                *relationships
+                    .entry(artist2.clone())
+                    .or_default()
+                    .entry(artist1.clone())
+                    .or_insert(0) += 1;
+            }
+        }
+    }
+    
+    // Convert to final format: for each artist, return top N related artists
+    let mut final_relationships: FnvHashMap<String, Vec<String>> = FnvHashMap::default();
+    for (artist, related) in relationships {
+        let mut related_vec: Vec<(String, u32)> = related.into_iter().collect();
+        related_vec.sort_by(|a, b| b.1.cmp(&a.1));
+        final_relationships.insert(
+            artist,
+            related_vec.iter().take(20).map(|(id, _)| id.clone()).collect(),
+        );
+    }
+    
+    final_relationships
 }
 
 #[cfg(test)]

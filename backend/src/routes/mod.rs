@@ -110,6 +110,7 @@ pub(crate) struct ArtistStats {
 }
 
 #[get("/stats/<username>/artist/<artist_id>")]
+#[allow(unused_variables)]
 pub(crate) async fn get_artist_stats(
     conn: DbConn,
     conn2: DbConn,
@@ -118,65 +119,53 @@ pub(crate) async fn get_artist_stats(
     artist_id: String,
 ) -> Result<Option<Json<ArtistStats>>, String> {
     let start_tok = start();
-    let user = match db_util::get_user_by_spotify_id(&conn, username).await? {
-        Some(user) => user,
-        None => {
-            return Ok(None);
-        },
-    };
-    mark(start_tok, "Finished getting spotify user by id");
+    
+    // Load data from CSV instead of database
+    let csv_data = crate::csv_loader::get_csv_data()
+        .await
+        .ok_or_else(|| "CSV data not loaded".to_string())?;
 
-    let spotify_access_token = {
-        let token_data = &mut *(&*token_data).lock().await;
-        token_data.get().await
-    }?;
-
-    let tok = start();
-    let user_clone = user.clone();
-    let artist_id_clone = artist_id.clone();
-    let spotify_access_token_clone = spotify_access_token.clone();
-    let (artist_popularity_history, (tracks_by_id, top_track_scores)) = match tokio::join!(
-        crate::db_util::get_artist_rank_history_single_artist(&user, conn, artist_id.clone()),
-        async move {
-            let (tracks_by_id, track_history) = match db_util::get_track_stats_history(
-                &user_clone,
-                conn2,
-                &spotify_access_token_clone,
-                artist_id_clone,
-            )
-            .await?
-            {
-                Some(res) => res,
-                None => return Ok(None),
-            };
-            let top_track_scores = crate::stats::compute_track_popularity_scores(&track_history);
-
-            Ok(Some((tracks_by_id, top_track_scores)))
-        },
-    ) {
-        (Err(err), _) | (Ok(_), Err(err)) => return Err(err),
-        (Ok(None), _) | (_, Ok(None)) => return Ok(None),
-        (Ok(Some(a)), Ok(Some(b))) => (a, b),
-    };
-    mark(tok, "Fetched artists stats and top tracks");
-
-    let tok = start();
-    let artist = match crate::spotify_api::fetch_artists(&spotify_access_token, &[&artist_id])
-        .await?
-        .drain(..)
-        .next()
-    {
-        Some(artist) => artist,
+    // Get the artist
+    let artist = match csv_data.artists.get(&artist_id) {
+        Some(artist) => artist.clone(),
         None => return Ok(None),
     };
-    mark(tok, "Found matching artist to use");
+
+    // Find tracks by this artist
+    let mut tracks_by_id: HashMap<String, Track> = HashMap::default();
+    let mut top_track_scores: Vec<(String, usize)> = Vec::new();
+    
+    for (track_id, track) in &csv_data.tracks {
+        if track.artists.iter().any(|a| a.id == artist_id) {
+            tracks_by_id.insert(track_id.clone(), track.clone());
+            
+            // Calculate play count for this track from CSV
+            let track_name = &track.name;
+            let play_count = csv_data.entries.iter()
+                .filter(|e| &e.track_name == track_name && e.artist_name == artist.name)
+                .count();
+            
+            if play_count > 0 {
+                top_track_scores.push((track_id.clone(), play_count));
+            }
+        }
+    }
+    
+    // Sort by play count
+    top_track_scores.sort_by(|a, b| b.1.cmp(&a.1));
+    top_track_scores.truncate(20);
+
+    // For popularity history, create a simple static history
+    // In a real implementation, this would be computed from CSV timestamp data
+    let popularity_history: Vec<(NaiveDateTime, [Option<u8>; 3])> = Vec::new();
 
     let stats = ArtistStats {
         artist,
         tracks_by_id,
-        popularity_history: artist_popularity_history,
+        popularity_history,
         top_tracks: top_track_scores,
     };
+    
     endpoint_response_time("get_artists_stats").observe(start_tok.elapsed().as_nanos() as u64);
     Ok(Some(Json(stats)))
 }
@@ -188,33 +177,48 @@ pub(crate) struct GenresHistory {
 }
 
 #[get("/stats/<username>/genre_history")]
+#[allow(unused_variables)]
 pub(crate) async fn get_genre_history(
     conn: DbConn,
     token_data: &State<Mutex<SpotifyTokenData>>,
     username: String,
 ) -> Result<Option<Json<GenresHistory>>, String> {
     let start = Instant::now();
-    let user = match db_util::get_user_by_spotify_id(&conn, username).await? {
-        Some(user) => user,
-        None => {
-            return Ok(None);
-        },
-    };
-    let spotify_access_token = {
-        let token_data = &mut *(&*token_data).lock().await;
-        token_data.get().await
-    }?;
+    
+    // Load data from CSV instead of database
+    let csv_data = crate::csv_loader::get_csv_data()
+        .await
+        .ok_or_else(|| "CSV data not loaded".to_string())?;
 
-    // Only include data from the "short" timeframe since we're producing a timeseries
-    let (artists_by_id, artist_stats_history) =
-        match db_util::get_artist_stats_history(&user, conn, &spotify_access_token, Some(0)).await?
-        {
-            Some(res) => res,
-            None => return Ok(None),
-        };
+    // Convert CSV genre history to the expected format
+    let mut timestamps = Vec::new();
+    let mut history_by_genre: HashMap<String, Vec<Option<usize>>> = HashMap::default();
 
-    let (timestamps, history_by_genre) =
-        crate::stats::get_top_genres_by_artists(&artists_by_id, &artist_stats_history, true);
+    for (timestamp, genre_counts) in &csv_data.genre_history {
+        timestamps.push(timestamp.naive_utc());
+        
+        // For each genre, calculate its ranking for this timestamp
+        let mut genre_vec: Vec<(String, f32)> = genre_counts.iter()
+            .map(|(genre, count)| (genre.clone(), *count))
+            .collect();
+        genre_vec.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap());
+        
+        // Update history for each genre
+        for genre in genre_counts.keys() {
+            let ranking = genre_vec.iter().position(|(g, _)| g == genre);
+            history_by_genre.entry(genre.clone())
+                .or_insert_with(|| vec![None; timestamps.len() - 1])
+                .push(ranking);
+        }
+        
+        // Fill in None for genres not present in this timestamp
+        for (genre, history) in history_by_genre.iter_mut() {
+            if history.len() < timestamps.len() {
+                history.push(None);
+            }
+        }
+    }
+
     endpoint_response_time("get_genre_history").observe(start.elapsed().as_nanos() as u64);
     Ok(Some(Json(GenresHistory {
         timestamps,
@@ -231,6 +235,7 @@ pub(crate) struct GenreStats {
 }
 
 #[get("/stats/<username>/genre/<genre>")]
+#[allow(unused_variables)]
 pub(crate) async fn get_genre_stats(
     conn: DbConn,
     token_data: &State<Mutex<SpotifyTokenData>>,
@@ -238,37 +243,61 @@ pub(crate) async fn get_genre_stats(
     genre: String,
 ) -> Result<Option<Json<GenreStats>>, String> {
     let start = Instant::now();
-    let user = match db_util::get_user_by_spotify_id(&conn, username).await? {
-        Some(user) => user,
-        None => {
-            return Ok(None);
-        },
+    
+    // Load data from CSV instead of database
+    let csv_data = crate::csv_loader::get_csv_data()
+        .await
+        .ok_or_else(|| "CSV data not loaded".to_string())?;
+
+    // Find artists with this genre
+    let mut artists_by_id: HashMap<String, Artist> = HashMap::default();
+    let mut artist_play_counts: HashMap<String, f32> = HashMap::default();
+    
+    let genre_lower = genre.to_lowercase();
+    for (artist_id, artist) in &csv_data.artists {
+        if let Some(genres) = &artist.genres {
+            if genres.iter().any(|g| g.to_lowercase() == genre_lower) {
+                artists_by_id.insert(artist_id.clone(), artist.clone());
+                
+                // Count plays for this artist
+                let play_count: u64 = csv_data.entries.iter()
+                    .filter(|e| e.artist_name == artist.name)
+                    .map(|e| e.ms_played)
+                    .sum();
+                artist_play_counts.insert(artist_id.clone(), play_count as f32);
+            }
+        }
+    }
+
+    // Sort artists by play count
+    let mut top_artists: Vec<(String, f32)> = artist_play_counts.into_iter().collect();
+    top_artists.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap());
+    top_artists.truncate(20);
+
+    // Create empty popularity history (would need historical data to populate this properly)
+    let popularity_history = TimeFrames {
+        short: vec![],
+        medium: vec![],
+        long: vec![],
     };
-    let spotify_access_token = {
-        let token_data = &mut *(&*token_data).lock().await;
-        token_data.get().await
-    }?;
+    
+    // Extract timestamps from genre history
+    let timestamps: Vec<NaiveDateTime> = csv_data.genre_history.iter()
+        .map(|(dt, _)| dt.naive_utc())
+        .collect();
 
-    let (artists_by_id, genre_stats_history) =
-        match db_util::get_genre_stats_history(&user, conn, &spotify_access_token, genre).await? {
-            Some(res) => res,
-            None => return Ok(None),
-        };
-
-    // Compute ranking scores for each of the update items
-    let (timestamps, ranking_by_artist_spotify_id_by_timeframe, popularity_history) =
-        crate::stats::compute_genre_ranking_history(genre_stats_history);
     endpoint_response_time("get_genre_stats").observe(start.elapsed().as_nanos() as u64);
 
     Ok(Some(Json(GenreStats {
         artists_by_id,
-        top_artists: ranking_by_artist_spotify_id_by_timeframe,
+        top_artists,
         popularity_history,
         timestamps,
     })))
 }
 
 #[get("/stats/<username>/timeline?<start_day_id>&<end_day_id>")]
+#[allow(unused_variables)]
 pub(crate) async fn get_timeline(
     conn: DbConn,
     token_data: &State<Mutex<SpotifyTokenData>>,
@@ -289,63 +318,47 @@ pub(crate) async fn get_timeline(
     )
     .map_err(|_| String::from("Invalid `end_day_id` provided"))?;
 
-    let User { id: user_id, .. } = match db_util::get_user_by_spotify_id(&conn, username).await? {
-        Some(user) => user,
-        None => {
-            return Ok(None);
-        },
-    };
-    let spotify_access_token = {
-        let token_data = &mut *(&*token_data).lock().await;
-        token_data.get().await
-    }?;
-
-    let (artist_events, track_events) = tokio::join!(
-        crate::db_util::get_artist_timeline_events(&conn, user_id, start_day, end_day)
-            .map_err(crate::db_util::stringify_diesel_err),
-        crate::db_util::get_track_timeline_events(&conn_2, user_id, start_day, end_day)
-            .map_err(crate::db_util::stringify_diesel_err),
-    );
-    let (artist_events, track_events) = (artist_events?, track_events?);
-
-    let artist_ids = artist_events
-        .iter()
-        .map(|evt| evt.0.as_str())
-        .collect::<Vec<_>>();
-    let track_ids = track_events
-        .iter()
-        .map(|evt| evt.0.as_str())
-        .collect::<Vec<_>>();
-
-    // Join to artist/track metadata
-    let items = tokio::try_join!(
-        crate::spotify_api::fetch_artists(&spotify_access_token, &artist_ids),
-        crate::spotify_api::fetch_tracks(&spotify_access_token, &track_ids),
-    )?;
-    let (artists, tracks) = items;
+    // Load data from CSV instead of database
+    let csv_data = crate::csv_loader::get_csv_data()
+        .await
+        .ok_or_else(|| "CSV data not loaded".to_string())?;
 
     let mut events = Vec::new();
     let mut event_count = 0;
-    events.extend(artist_events.into_iter().zip(artists.into_iter()).map(
-        |((_artist_id, first_seen), artist)| {
-            event_count += 1;
-            TimelineEvent {
-                event_type: TimelineEventType::ArtistFirstSeen { artist },
-                date: first_seen.date(),
-                id: event_count,
+
+    // Filter artist first seen events by date range
+    for (artist_id, first_seen_dt) in &csv_data.artist_first_seen {
+        let first_seen = first_seen_dt.naive_utc();
+        if first_seen >= start_day && first_seen <= end_day {
+            if let Some(artist) = csv_data.artists.get(artist_id) {
+                event_count += 1;
+                events.push(TimelineEvent {
+                    event_type: TimelineEventType::ArtistFirstSeen {
+                        artist: artist.clone(),
+                    },
+                    date: first_seen.date(),
+                    id: event_count,
+                });
             }
-        },
-    ));
-    events.extend(track_events.into_iter().zip(tracks.into_iter()).map(
-        |((_track_id, first_seen), track)| {
-            event_count += 1;
-            TimelineEvent {
-                event_type: TimelineEventType::TopTrackFirstSeen { track },
-                date: first_seen.date(),
-                id: event_count,
+        }
+    }
+
+    // Filter track first seen events by date range
+    for (track_id, first_seen_dt) in &csv_data.track_first_seen {
+        let first_seen = first_seen_dt.naive_utc();
+        if first_seen >= start_day && first_seen <= end_day {
+            if let Some(track) = csv_data.tracks.get(track_id) {
+                event_count += 1;
+                events.push(TimelineEvent {
+                    event_type: TimelineEventType::TopTrackFirstSeen {
+                        track: track.clone(),
+                    },
+                    date: first_seen.date(),
+                    id: event_count,
+                });
             }
-        },
-    ));
+        }
+    }
 
     events.sort_unstable_by_key(|evt| evt.date);
     endpoint_response_time("get_timeline").observe(start.elapsed().as_nanos() as u64);
@@ -760,6 +773,7 @@ async fn compute_comparison(
 }
 
 #[get("/compare/<user1>/<user2>")]
+#[allow(unused_variables)]
 pub(crate) async fn compare_users(
     conn1: DbConn,
     conn2: DbConn,
@@ -770,11 +784,17 @@ pub(crate) async fn compare_users(
     user2: String,
 ) -> Result<Option<Json<UserComparison>>, String> {
     let start = Instant::now();
-    let res = compute_comparison(user1, user2, conn1, conn2, conn3, conn4, token_data)
-        .await
-        .map(|res| res.map(Json))?;
+    
+    // In CSV-only mode, comparing two users doesn't make sense since we only have one CSV
+    // Return empty comparison
     endpoint_response_time("compare_users").observe(start.elapsed().as_nanos() as u64);
-    Ok(res)
+    Ok(Some(Json(UserComparison {
+        tracks: Vec::new(),
+        artists: Vec::new(),
+        genres: Vec::new(),
+        user1_username: user1,
+        user2_username: user2,
+    })))
 }
 
 async fn build_related_artists_graph(
@@ -815,95 +835,113 @@ async fn build_related_artists_graph(
 }
 
 #[get("/stats/<user_id>/related_artists_graph")]
+#[allow(unused_variables)]
 pub(crate) async fn get_related_artists_graph(
     conn: DbConn,
     user_id: String,
     token_data: &State<Mutex<SpotifyTokenData>>,
 ) -> Result<Option<Json<RelatedArtistsGraph>>, String> {
     let start = Instant::now();
-    let User { id: user_id, .. } = match db_util::get_user_by_spotify_id(&conn, user_id).await? {
-        Some(user) => user,
-        None => {
-            return Ok(None);
-        },
+    
+    // Load data from CSV instead of database
+    let csv_data = crate::csv_loader::get_csv_data()
+        .await
+        .ok_or_else(|| "CSV data not loaded".to_string())?;
+
+    // Get top artists from all timeframes
+    let mut all_artist_ids: FnvHashSet<String> = FnvHashSet::default();
+    for artist_name in csv_data.top_artists_short.iter()
+        .chain(csv_data.top_artists_medium.iter())
+        .chain(csv_data.top_artists_long.iter())
+    {
+        let artist_id = format!("csv_{}", artist_name.replace(' ', "_").to_lowercase());
+        all_artist_ids.insert(artist_id);
+    }
+
+    // Build related artists graph from CSV data
+    let mut related_artists_by_id = HashMap::default();
+    let mut extra_artists = HashMap::default();
+
+    for artist_id in &all_artist_ids {
+        if let Some(artist) = csv_data.artists.get(artist_id) {
+            extra_artists.insert(artist_id.clone(), artist.clone());
+            
+            // Get related artists from our pre-computed relationships
+            if let Some(related_ids) = csv_data.artist_relationships.get(artist_id) {
+                related_artists_by_id.insert(artist_id.clone(), related_ids.clone());
+                
+                // Add related artists to extra_artists
+                for related_id in related_ids {
+                    if let Some(related_artist) = csv_data.artists.get(related_id) {
+                        extra_artists.insert(related_id.clone(), related_artist.clone());
+                    }
+                }
+            }
+        }
+    }
+
+    let out = RelatedArtistsGraph {
+        extra_artists,
+        related_artists: related_artists_by_id,
     };
-    let spotify_access_token = {
-        let token_data = &mut *(&*token_data).lock().await;
-        token_data.get().await
-    }?;
-
-    // Start off by getting all artists for the user from all timeframes
-    let all_artists_for_user =
-        get_all_top_artists_for_user(&conn, user_id)
-            .await
-            .map_err(|err| {
-                error!("Error fetching all artists for user: {:?}", err);
-                String::from("Internal DB error")
-            })?;
-    let all_artist_ids_for_user: Vec<&str> = all_artists_for_user
-        .iter()
-        .map(|(_internal_id, spotify_id)| spotify_id.as_str())
-        .collect();
-
-    let out = build_related_artists_graph(spotify_access_token, &all_artist_ids_for_user).await?;
+    
     endpoint_response_time("get_related_artists_graph").observe(start.elapsed().as_nanos() as u64);
     Ok(Some(Json(out)))
 }
 
 #[get("/related_artists/<artist_id>")]
+#[allow(unused_variables)]
 pub(crate) async fn get_related_artists(
     artist_id: String,
     token_data: &State<Mutex<SpotifyTokenData>>,
 ) -> Result<Option<Json<RelatedArtistsGraph>>, String> {
     let start = Instant::now();
-    let spotify_access_token = {
-        let token_data = &mut *(&*token_data).lock().await;
-        token_data.get().await
-    }?;
+    
+    // Load data from CSV instead of Spotify API
+    let csv_data = crate::csv_loader::get_csv_data()
+        .await
+        .ok_or_else(|| "CSV data not loaded".to_string())?;
 
-    let related_artist_ids =
-        get_multiple_related_artists(spotify_access_token.clone(), &[&artist_id]).await?;
-    let related_artist_ids = match related_artist_ids.into_iter().next() {
-        Some(ids) => ids,
-        None => {
-            error!("Empty vec returned from `get_multiple_related_artists`");
-            return Ok(None);
-        },
+    let mut extra_artists = HashMap::default();
+    let mut related_artists_by_id = HashMap::default();
+
+    // Get the artist
+    if let Some(artist) = csv_data.artists.get(&artist_id) {
+        extra_artists.insert(artist_id.clone(), artist.clone());
+        
+        // Get related artists from pre-computed relationships
+        if let Some(related_ids) = csv_data.artist_relationships.get(&artist_id) {
+            related_artists_by_id.insert(artist_id.clone(), related_ids.clone());
+            
+            // Add related artists to extra_artists
+            for related_id in related_ids {
+                if let Some(related_artist) = csv_data.artists.get(related_id) {
+                    extra_artists.insert(related_id.clone(), related_artist.clone());
+                }
+            }
+        }
+    }
+
+    let out = RelatedArtistsGraph {
+        extra_artists,
+        related_artists: related_artists_by_id,
     };
-    let related_artist_ids = related_artist_ids
-        .iter()
-        .map(String::as_str)
-        .collect::<Vec<_>>();
-
-    let out = build_related_artists_graph(spotify_access_token, &related_artist_ids).await?;
+    
     endpoint_response_time("get_related_artists").observe(start.elapsed().as_nanos() as u64);
     Ok(Some(Json(out)))
 }
 
 #[get("/display_name/<username>")]
+#[allow(unused_variables)]
 pub(crate) async fn get_display_name(
     conn: DbConn,
     username: String,
 ) -> Result<Option<String>, String> {
     let start = Instant::now();
-    match db_util::get_user_by_spotify_id(&conn, username).await? {
-        Some(user) => {
-            let user_clone = user.clone();
-            tokio::task::spawn(async move {
-                if let Err(err) = db_util::update_user_last_viewed(&user_clone, &conn).await {
-                    error!(
-                        "Error updating user last viewed time for {}: {:?}",
-                        user_clone.username, err
-                    );
-                }
-            });
-
-            endpoint_response_time("get_display_name").observe(start.elapsed().as_nanos() as u64);
-
-            Ok(Some(user.username))
-        },
-        None => Ok(None),
-    }
+    
+    // In CSV-only mode, just return the username as display name
+    endpoint_response_time("get_display_name").observe(start.elapsed().as_nanos() as u64);
+    Ok(Some(username))
 }
 
 #[post("/dump_redis_related_artists_to_database", data = "<api_token_data>")]
@@ -1072,6 +1110,7 @@ impl<'a, 'r> rocket::request::FromRequest<'r> for UserAgent {
 }
 
 #[get("/search_artist?<q>")]
+#[allow(unused_variables)]
 pub(crate) async fn search_artist(
     conn: DbConn,
     token_data: &State<Mutex<SpotifyTokenData>>,
@@ -1079,50 +1118,33 @@ pub(crate) async fn search_artist(
     user_agent: UserAgent,
 ) -> Result<Json<Vec<ArtistSearchResult>>, String> {
     let start = Instant::now();
-    let spotify_access_token = {
-        let token_data = &mut *(&*token_data).lock().await;
-        token_data.get().await
-    }?;
+    
+    // Load data from CSV instead of Spotify API
+    let csv_data = crate::csv_loader::get_csv_data()
+        .await
+        .ok_or_else(|| "CSV data not loaded".to_string())?;
 
-    // First check cache
-    let cached_item =
-        block_in_place(|| get_hash_items::<Vec<ArtistSearchResult>>("artistSearch", &[&q]))
-            .map_err(|err| {
-                error!("Error checking cache for artist search results: {}", err);
-                String::from("Internal error with cache")
-            })?
-            .into_iter()
-            .next()
-            .flatten();
+    // Simple case-insensitive search through CSV artists
+    let query_lower = q.to_lowercase();
+    let mut results: Vec<ArtistSearchResult> = Vec::new();
 
-    if let Some(cached_item) = cached_item {
-        info!("Found hit in cache for artist search query={}", q);
-        return Ok(Json(cached_item));
+    for (artist_id, artist) in &csv_data.artists {
+        if artist.name.to_lowercase().contains(&query_lower) {
+            results.push(ArtistSearchResult {
+                spotify_id: artist_id.clone(),
+                internal_id: None,
+                name: artist.name.clone(),
+            });
+            
+            // Limit to 20 results
+            if results.len() >= 20 {
+                break;
+            }
+        }
     }
-
-    if user_agent.0.to_ascii_lowercase().starts_with("python") {
-        warn!(
-            "Returning empty response for artist search query from Python user agent: ({}): {q}",
-            user_agent.0
-        );
-        return Ok(Json(Vec::new()));
-    }
-
-    // Hit the Spotify API and store in the cache
-    let search_results = search_artists(&conn, spotify_access_token, &q).await?;
-    set_hash_items::<Vec<ArtistSearchResult>>("artistSearch", &[(&q, search_results.clone())])
-        .map_err(|err| {
-            error!("Error storing artist search in cache: {}", err);
-            String::from("Internal error with cache")
-        })?;
-    info!(
-        "Successfully hit Spotify API for artist search query={:?} and stored in cache",
-        q
-    );
 
     endpoint_response_time("search_artist").observe(start.elapsed().as_nanos() as u64);
-
-    Ok(Json(search_results))
+    Ok(Json(results))
 }
 
 #[get(
