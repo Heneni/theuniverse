@@ -123,6 +123,17 @@ dev:
     echo ""
   fi
   
+  # Build WASM client for music galaxy feature (optional - requires wasm tooling)
+  echo "🔨 Building WASM client (optional, can be skipped)..."
+  if command -v wasm-bindgen &> /dev/null && rustup target list --installed | grep -q wasm32-unknown-unknown; then
+    just build-wasm-client 2>&1 | tail -10
+    echo "✓ WASM client built"
+  else
+    echo "⚠️  Skipping WASM build (wasm-bindgen or wasm32 target not installed)"
+    echo "   The music galaxy feature won't work, but main features will be available"
+  fi
+  echo ""
+  
   # Start the frontend in the foreground
   echo "⚛️  Starting frontend (React)..."
   REACT_APP_API_BASE_URL=http://localhost:8000 REACT_APP_SITE_URL=http://localhost:9050 $PACKAGE_MANAGER start --host 0.0.0.0 --port 9050
