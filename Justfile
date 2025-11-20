@@ -43,6 +43,7 @@ dev:
     {
       echo "# Minimal configuration for local CSV-based development"
       echo "# These are dummy values for local testing with CSV data"
+      echo "# Note: A minimal MySQL container is started for compatibility, but routes use CSV data"
       echo "SPOTIFY_CLIENT_ID=\"dummy_client_id_for_local_dev\""
       echo "SPOTIFY_CLIENT_SECRET=\"dummy_client_secret_for_local_dev\""
       echo "API_SERVER_URL=\"http://localhost:8000\""
@@ -50,13 +51,46 @@ dev:
       echo "REDIS_URL=\"redis://localhost:6379\""
       echo "ADMIN_API_TOKEN=\"local_dev_token\""
       echo "TELEMETRY_SERVER_PORT=\"4101\""
+      echo "ROCKET_DATABASES=\"{ spotify_homepage = { url = \\\"mysql://spotifytrack:spotifytrack@localhost:3307/spotifytrack\\\" } }\""
     } > backend/.env
     echo "✓ Created backend/.env with dummy values for local development"
   fi
   
-  # Create a temporary file to track the backend PID
+  # Start a minimal MySQL container for backend compatibility (routes use CSV data)
+  echo "🗄️  Starting minimal MySQL container..."
+  docker rm -f spotifytrack-mysql 2>/dev/null || true
+  docker run -d \
+    --name spotifytrack-mysql \
+    -e MYSQL_ROOT_PASSWORD=root \
+    -e MYSQL_DATABASE=spotifytrack \
+    -e MYSQL_USER=spotifytrack \
+    -e MYSQL_PASSWORD=spotifytrack \
+    -p 3307:3306 \
+    mysql:8.0 \
+    --default-authentication-plugin=mysql_native_password 2>&1 | head -5
+  
+  # Wait for MySQL to be ready
+  echo "⏳ Waiting for MySQL to be ready..."
+  for i in {1..30}; do
+    if docker exec spotifytrack-mysql mysqladmin ping -h localhost --silent 2>/dev/null; then
+      echo "✓ MySQL is ready"
+      break
+    fi
+    sleep 1
+  done
+  
+  # Create a temporary file to track the backend PID and cleanup
   BACKEND_PID_FILE=$(mktemp)
-  trap "echo ''; echo '🛑 Shutting down services...'; kill $(cat $BACKEND_PID_FILE) 2>/dev/null || true; rm -f $BACKEND_PID_FILE; echo '✓ Services stopped'; exit" INT TERM EXIT
+  cleanup() {
+    echo ''
+    echo '🛑 Shutting down services...'
+    kill $(cat $BACKEND_PID_FILE) 2>/dev/null || true
+    docker rm -f spotifytrack-mysql 2>/dev/null || true
+    rm -f $BACKEND_PID_FILE
+    echo '✓ Services stopped'
+    exit
+  }
+  trap cleanup INT TERM EXIT
   
   # Start the backend in the background
   echo "🔧 Starting backend (Rust/Rocket)..."
