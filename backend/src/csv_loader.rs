@@ -136,9 +136,10 @@ fn calculate_top_artists(
     entries: &[ListeningEntry],
     artist_play_counts: &FnvHashMap<String, u64>,
 ) -> (Vec<String>, Vec<String>, Vec<String>) {
-    let now = Utc::now();
-    let four_weeks_ago = now - chrono::Duration::weeks(4);
-    let six_months_ago = now - chrono::Duration::days(180);
+    // Use the latest timestamp from the data instead of current time
+    let latest_timestamp = entries.last().map(|e| e.timestamp).unwrap_or_else(Utc::now);
+    let four_weeks_ago = latest_timestamp - chrono::Duration::weeks(4);
+    let six_months_ago = latest_timestamp - chrono::Duration::days(180);
 
     let mut short_counts: FnvHashMap<String, u64> = FnvHashMap::default();
     let mut medium_counts: FnvHashMap<String, u64> = FnvHashMap::default();
@@ -163,9 +164,10 @@ fn calculate_top_tracks(
     entries: &[ListeningEntry],
     track_play_counts: &FnvHashMap<(String, String), u64>,
 ) -> (Vec<String>, Vec<String>, Vec<String>) {
-    let now = Utc::now();
-    let four_weeks_ago = now - chrono::Duration::weeks(4);
-    let six_months_ago = now - chrono::Duration::days(180);
+    // Use the latest timestamp from the data instead of current time
+    let latest_timestamp = entries.last().map(|e| e.timestamp).unwrap_or_else(Utc::now);
+    let four_weeks_ago = latest_timestamp - chrono::Duration::weeks(4);
+    let six_months_ago = latest_timestamp - chrono::Duration::days(180);
 
     let mut short_counts: FnvHashMap<(String, String), u64> = FnvHashMap::default();
     let mut medium_counts: FnvHashMap<(String, String), u64> = FnvHashMap::default();
@@ -270,4 +272,31 @@ fn build_tracks(track_play_counts: &FnvHashMap<(String, String), u64>) -> FnvHas
     }
     
     tracks
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn test_csv_loader() {
+        // Test loading CSV data
+        let result = load_csv_data().await;
+        assert!(result.is_ok(), "CSV loading should succeed");
+
+        // Test getting loaded data
+        let data = get_csv_data().await;
+        assert!(data.is_some(), "CSV data should be loaded");
+
+        let data = data.unwrap();
+        assert!(!data.entries.is_empty(), "Should have listening entries");
+        assert!(!data.artists.is_empty(), "Should have artists");
+        assert!(!data.tracks.is_empty(), "Should have tracks");
+        
+        println!("Loaded {} entries", data.entries.len());
+        println!("Loaded {} artists", data.artists.len());
+        println!("Loaded {} tracks", data.tracks.len());
+        println!("Top artists (short): {}", data.top_artists_short.len());
+        println!("Top tracks (short): {}", data.top_tracks_short.len());
+    }
 }
