@@ -10,10 +10,10 @@ extern crate rocket;
 
 use std::time::Duration;
 
-use artist_embedding::{init_artist_embedding_ctx, map_3d::get_packed_3d_artist_coords};
+use artist_embedding::{init_artist_embedding_ctx};
 use foundations::telemetry::{
     settings::{MetricsSettings, ServiceNameFormat, TelemetryServerSettings, TelemetrySettings},
-    tokio_runtime_metrics::record_runtime_metrics_sample,
+    // tokio_runtime_metrics::record_runtime_metrics_sample,
 };
 // use rocket_async_compression::Compression;
 use tokio::sync::Mutex;
@@ -23,6 +23,7 @@ pub mod benchmarking;
 pub mod cache;
 pub mod conf;
 pub mod cors;
+pub mod csv_loader;
 pub mod db_util;
 pub mod external_storage;
 pub mod metrics;
@@ -66,21 +67,27 @@ pub async fn main() {
     println!("Telemetry server is listening on http://{}", tele_serv_addr);
     tokio::task::spawn(tele_serv_fut);
 
-    let handle = tokio::runtime::Handle::current();
-    foundations::telemetry::tokio_runtime_metrics::register_runtime(None, None, &handle);
-    println!("Registered tokio runtime metrics");
+    // Commented out due to tokio_unstable requirement
+    // let handle = tokio::runtime::Handle::current();
+    // foundations::telemetry::tokio_runtime_metrics::register_runtime(None, None, &handle);
+    // println!("Registered tokio runtime metrics");
 
-    tokio::task::spawn(async move {
-        loop {
-            record_runtime_metrics_sample();
+    // tokio::task::spawn(async move {
+    //     loop {
+    //         record_runtime_metrics_sample();
 
-            // record metrics roughly twice a second
-            tokio::time::sleep(Duration::from_millis(500)).await;
-        }
-    });
+    //         // record metrics roughly twice a second
+    //         tokio::time::sleep(Duration::from_millis(500)).await;
+    //     }
+    // });
 
     tokio::task::spawn(init_spotify_id_map_cache());
     init_artist_embedding_ctx("https://ameo.dev/artist_embedding_8d.w2v").await;
+    
+    // Load CSV data
+    csv_loader::load_csv_data()
+        .await
+        .expect("Failed to load CSV data");
 
     let all_routes = routes![
         routes::index,

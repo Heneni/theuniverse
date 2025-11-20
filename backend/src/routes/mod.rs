@@ -50,8 +50,9 @@ const SPOTIFY_TOKEN_FETCH_URL: &str = "https://accounts.spotify.com/api/token";
 #[get("/")]
 pub(crate) fn index() -> &'static str { "Application successfully started!" }
 
-/// Retrieves the current top tracks and artist for the current user
+/// Retrieves the current top tracks and artist for the current user (now uses CSV data)
 #[get("/stats/<username>")]
+#[allow(unused_variables)]
 pub(crate) async fn get_current_stats(
     conn: DbConn,
     conn2: DbConn,
@@ -59,38 +60,40 @@ pub(crate) async fn get_current_stats(
     token_data: &State<Mutex<SpotifyTokenData>>,
 ) -> Result<Option<Json<StatsSnapshot>>, String> {
     let start_tok = start();
-    let user = match db_util::get_user_by_spotify_id(&conn, username).await? {
-        Some(user) => user,
-        None => {
-            return Ok(None);
-        },
-    };
-    mark(start_tok, "Finished getting spotify user by id");
 
-    let spotify_access_token = {
-        let token_data = &mut *(&*token_data).lock().await;
-        token_data.get().await
-    }?;
+    // Load data from CSV instead of database
+    let csv_data = crate::csv_loader::get_csv_data()
+        .await
+        .ok_or_else(|| "CSV data not loaded".to_string())?;
 
-    let tok = start();
-    let (artist_stats, track_stats) = match tokio::join!(
-        db_util::get_artist_stats(&user, conn, &spotify_access_token),
-        db_util::get_track_stats(&user, conn2, &spotify_access_token),
-    ) {
-        (Err(err), _) | (Ok(_), Err(err)) => return Err(err),
-        (Ok(None), _) | (_, Ok(None)) => return Ok(None),
-        (Ok(Some(artist_stats)), Ok(Some(track_stats))) => (artist_stats, track_stats),
-    };
-    mark(tok, "Fetched artist and track stats");
+    let mut snapshot = StatsSnapshot::new(chrono::Utc::now().naive_utc());
 
-    let mut snapshot = StatsSnapshot::new(user.last_update_time);
-
-    for (timeframe_id, artist) in artist_stats {
-        snapshot.artists.add_item_by_id(timeframe_id, artist);
+    // Add top artists
+    for (timeframe_id, artist_ids) in [
+        (0, &csv_data.top_artists_short),
+        (1, &csv_data.top_artists_medium),
+        (2, &csv_data.top_artists_long),
+    ] {
+        for artist_name in artist_ids {
+            let artist_id = format!("csv_{}", artist_name.replace(' ', "_").to_lowercase());
+            if let Some(artist) = csv_data.artists.get(&artist_id) {
+                snapshot.artists.add_item_by_id(timeframe_id, artist.clone());
+            }
+        }
     }
 
-    for (timeframe_id, track) in track_stats {
-        snapshot.tracks.add_item_by_id(timeframe_id, track);
+    // Add top tracks
+    for (timeframe_id, track_ids) in [
+        (0, &csv_data.top_tracks_short),
+        (1, &csv_data.top_tracks_medium),
+        (2, &csv_data.top_tracks_long),
+    ] {
+        for track_key in track_ids {
+            let track_id = format!("csv_{}", track_key.replace(' ', "_").to_lowercase());
+            if let Some(track) = csv_data.tracks.get(&track_id) {
+                snapshot.tracks.add_item_by_id(timeframe_id, track.clone());
+            }
+        }
     }
 
     endpoint_response_time("get_current_stats").observe(start_tok.elapsed().as_nanos() as u64);
@@ -351,21 +354,13 @@ pub(crate) async fn get_timeline(
 }
 
 /// Redirects to the Spotify authorization page for the application
+/// OAuth authorization route - now stubbed out (returns to home page)
 #[get("/authorize?<playlist_perms>&<state>")]
+#[allow(unused_variables)]
 pub(crate) fn authorize(playlist_perms: Option<&str>, state: Option<&str>) -> Redirect {
-    let scopes = match playlist_perms {
-        None | Some("false") | Some("False") | Some("0") => "user-top-read",
-        _ => "user-top-read%20playlist-modify-public",
-    };
-    let callback_uri = crate::conf::CONF.get_absolute_oauth_cb_uri();
-
-    Redirect::to(format!(
-        "https://accounts.spotify.com/authorize?client_id={}&response_type=code&redirect_uri={}&scope={}&state={}",
-        CONF.client_id,
-        callback_uri,
-        scopes,
-        RawStr::new(state.unwrap_or("")).percent_encode()
-    ))
+    // Instead of redirecting to Spotify, redirect back to the home page
+    // since we're now using local CSV data
+    Redirect::to(format!("{}", CONF.website_url))
 }
 
 /// The playlist will be generated on the account of user2
@@ -444,9 +439,9 @@ async fn generate_shared_playlist(
 }
 
 /// This handles the OAuth authentication process for new users.  It is hit as the callback for the
-/// authentication request and handles retrieving user tokens, creating an entry for the user in the
-/// users table, and fetching an initial stats snapshot.
+/// OAuth callback - now stubbed out (redirects to demo user stats)
 #[get("/oauth_cb?<error>&<code>&<state>")]
+#[allow(unused_variables)]
 pub(crate) async fn oauth_cb(
     conn1: DbConn,
     conn2: DbConn,
@@ -457,224 +452,8 @@ pub(crate) async fn oauth_cb(
     code: &str,
     state: Option<&str>,
 ) -> Result<Redirect, String> {
-    use crate::schema::users;
-
-    let start = Instant::now();
-
-    if error.is_some() {
-        error!("Error during Oauth authorization process: {:?}", error);
-        return Err("An error occured while authenticating with Spotify.".into());
-    }
-
-    let oauth_cb_url = crate::conf::CONF.get_absolute_oauth_cb_uri();
-
-    // Shoot the code back to Spotify and get an API token for the user in return
-    let mut params = HashMap::default();
-    params.insert("grant_type", "authorization_code");
-    params.insert("code", code);
-    params.insert("redirect_uri", oauth_cb_url.as_str());
-    params.insert("client_id", CONF.client_id.as_str());
-    params.insert("client_secret", CONF.client_secret.as_str());
-
-    let client = get_reqwest_client().await;
-    info!("Making request to fetch user token from OAuth CB response...");
-    let res = client
-        .post(SPOTIFY_TOKEN_FETCH_URL)
-        .form(&params)
-        .send()
-        .await
-        .map_err(|_| -> String {
-            "Error fetching token from Spotify from response Oauth code".into()
-        })?;
-
-    let res: OAuthTokenResponse = match res.json().await {
-        Ok(res) => res,
-        Err(err) => {
-            error!("Failed to fetch user tokens from OAuth CB code: {:?}", err);
-            return Err("Error parsing response from token fetch endpoint".into());
-        },
-    };
-
-    let (access_token, refresh_token) = match res {
-        OAuthTokenResponse::Success {
-            access_token,
-            refresh_token,
-            token_type,
-            ..
-        } => {
-            info!("Successfully received token of type: {}", token_type);
-            (access_token, refresh_token)
-        },
-        OAuthTokenResponse::Error {
-            error,
-            error_description,
-        } => {
-            error!(
-                "Error fetching tokens for user: {}; {}",
-                error, error_description
-            );
-            return Err("Error fetching user access tokens from Spotify API.".into());
-        },
-    };
-
-    info!("Fetched user tokens.  Inserting user into database...");
-
-    // Fetch the user's username and spotify ID from the Spotify API
-    let user_profile_info = crate::spotify_api::get_user_profile_info(&access_token).await?;
-    let user_spotify_id = user_profile_info.id;
-    let username = user_profile_info.display_name;
-
-    let user = NewUser {
-        creation_time: Utc::now().naive_utc(),
-        last_update_time: Utc::now().naive_utc(),
-        spotify_id: user_spotify_id.clone(),
-        username: username.clone(),
-        token: access_token.clone(),
-        refresh_token: refresh_token.clone(),
-    };
-
-    let query = diesel::insert_into(crate::schema::users::table).values(user);
-    match conn1.run(move |conn| query.execute(conn)).await {
-        Err(diesel::result::Error::DatabaseError(
-            diesel::result::DatabaseErrorKind::UniqueViolation,
-            _,
-        )) => {
-            let query = diesel::update(users::table)
-                .filter(users::dsl::spotify_id.eq(user_spotify_id.clone()))
-                .set((
-                    users::dsl::refresh_token.eq(refresh_token),
-                    users::dsl::token.eq(access_token.clone()),
-                ));
-            conn1
-                .run(move |conn| query.execute(conn))
-                .await
-                .map_err(|err| {
-                    error!(
-                        "Error updating tokens for user id={}: {:?}",
-                        user_spotify_id, err
-                    );
-                    String::from("Internal error occurred when trying to update user")
-                })?;
-
-            info!("Already have a row for user; skipping manual update and redirecting directly.");
-        },
-        Err(err) => {
-            error!("Error inserting row: {:?}", err);
-            return Err("Error inserting user into database".into());
-        },
-        Ok(_) => {
-            // Retrieve the inserted user row
-            let user = crate::db_util::get_user_by_spotify_id(&conn1, user_spotify_id.clone())
-                .await?
-                .expect("Failed to load just inserted user from database");
-
-            // Create an initial stats snapshot to store for the user
-            let cur_user_stats = match crate::spotify_api::fetch_cur_stats(&user).await? {
-                Some(stats) => stats,
-                None => {
-                    error!(
-                        "Failed to fetch stats for user \"{}\"; bad response from Spotify API?",
-                        username
-                    );
-                    return Err("Error fetching user stats from the Spotify API.".into());
-                },
-            };
-
-            crate::spotify_api::store_stats_snapshot(&conn1, &user, cur_user_stats).await?;
-        },
-    };
-
-    match state {
-        Some(s) if !s.is_empty() => {
-            if s == "galaxy" {
-                return Ok(Redirect::to(format!(
-                    "https://galaxy.spotifytrack.net/?spotifyID={}",
-                    user_spotify_id
-                )));
-            }
-
-            let s = RawStr::new(s);
-            let percent_decoded =
-                s.percent_decode()
-                    .map(|s| -> String { s.into() })
-                    .map_err(|_| {
-                        error!("Invalid URL-Encoded `state` param; dropping");
-                        "Invalid URL-encoded `state` param provided; can't parse.".to_string()
-                    })?;
-
-            match serde_json::from_str(percent_decoded.as_ref()) {
-                Ok(CreateSharedPlaylistRequest { user1_id, user2_id }) => {
-                    let playlist = generate_shared_playlist(
-                        conn1,
-                        conn2,
-                        conn3,
-                        conn4,
-                        token_data,
-                        &access_token,
-                        &user1_id,
-                        &user2_id,
-                    )
-                    .await?;
-
-                    match playlist {
-                        Some(playlist) => {
-                            let encoded_playlist = serde_json::to_string(&serde_json::json!({
-                                "uri": playlist.uri,
-                                "track_count": playlist.tracks.total,
-                                "name": playlist.name
-                            }))
-                            .map_err(|err| {
-                                error!("Error JSON-encoding playlist: {:?}", err);
-                                "Internal error while generating playlist".to_string()
-                            })?;
-                            let encoded_playlist =
-                                RawStr::percent_encode(&RawStr::new(encoded_playlist.as_str()));
-                            let redirect_url = format!(
-                                "{}/compare/{}/{}?playlist={}",
-                                CONF.website_url, user1_id, user2_id, encoded_playlist
-                            );
-                            return Ok(Redirect::to(redirect_url));
-                        },
-                        None =>
-                            return Err(format!(
-                                "One or both of the supplied users has never {}",
-                                "connected to Spotifytrack before"
-                            )),
-                    }
-                },
-                Err(err) => {
-                    if let Ok(CompareToRequest { compare_to }) =
-                        serde_json::from_str(percent_decoded.as_ref())
-                    {
-                        let redirect_url = format!(
-                            "{}/compare/{}/{}",
-                            CONF.website_url, compare_to, user_spotify_id
-                        );
-                        return Ok(Redirect::to(redirect_url));
-                    }
-
-                    warn!(
-                        "Error parsing JSON body of what we presume is a playlist generation \
-                         request: {:?}",
-                        err
-                    );
-                    return Err("Error parsing state param for presumed shared playlist \
-                                generation request"
-                        .into());
-                },
-            }
-        },
-        _ => (),
-    }
-
-    let redirect_url = match state {
-        Some(s) if s.starts_with("/") => format!("{}{}", CONF.website_url, s),
-        _ => format!("{}/stats/{}", CONF.website_url, user_spotify_id),
-    };
-
-    endpoint_response_time("oauth_cb").observe(start.elapsed().as_nanos() as u64);
-
-    // Redirect the user to their stats page
+    // Since we're using local CSV data, redirect to a demo user stats page
+    let redirect_url = format!("{}/stats/demo", CONF.website_url);
     Ok(Redirect::to(redirect_url))
 }
 
