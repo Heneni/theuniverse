@@ -1,0 +1,76 @@
+{
+  "name": "Spotifytrack Development",
+  "build": {
+    "dockerfile": "Dockerfile",
+    "context": ".."
+  },
+  
+  // Features to add to the dev container
+  "features": {
+    "ghcr.io/devcontainers/features/docker-in-docker:2": {},
+    "ghcr.io/devcontainers/features/git:1": {}
+  },
+
+  // Configure tool-specific properties
+  "customizations": {
+    "vscode": {
+      "settings": {
+        "terminal.integrated.defaultProfile.linux": "bash",
+        "rust-analyzer.cargo.features": "all",
+        "editor.formatOnSave": true,
+        "[rust]": {
+          "editor.defaultFormatter": "rust-lang.rust-analyzer"
+        },
+        "[typescript]": {
+          "editor.defaultFormatter": "esbenp.prettier-vscode"
+        },
+        "[typescriptreact]": {
+          "editor.defaultFormatter": "esbenp.prettier-vscode"
+        }
+      },
+      "extensions": [
+        "rust-lang.rust-analyzer",
+        "tamasfe.even-better-toml",
+        "esbenp.prettier-vscode",
+        "dbaeumer.vscode-eslint",
+        "bradlc.vscode-tailwindcss"
+      ]
+    }
+  },
+
+  // Forward ports for backend and frontend
+  "forwardPorts": [8000, 9050, 3307],
+  "portsAttributes": {
+    "8000": {
+      "label": "Backend API",
+      "onAutoForward": "notify"
+    },
+    "9050": {
+      "label": "Frontend Dev Server",
+      "onAutoForward": "openBrowser"
+    },
+    "3307": {
+      "label": "MySQL Database",
+      "onAutoForward": "silent"
+    }
+  },
+
+  // Use 'postCreateCommand' to install dependencies after container is created
+  "postCreateCommand": "bash .devcontainer/post-create.sh",
+
+  // Display welcome message on start
+  "postStartCommand": "bash .devcontainer/welcome.sh",
+
+  // Set environment variables
+  "remoteEnv": {
+    "RUST_LOG": "info",
+    "ROCKET_LOG_LEVEL": "normal",
+    "RUST_BACKTRACE": "1"
+  },
+
+  // Comment out to connect as root instead
+  "remoteUser": "vscode",
+
+  // Keep container running even after process exits
+  "overrideCommand": false
+}

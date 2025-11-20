@@ -16,6 +16,31 @@ Try it yourself: <https://spotifytrack.net>
 
 ## Building + Developing
 
+### 🚀 Quick Start with GitHub Codespaces (Recommended)
+
+The easiest way to try Spotifytrack is using GitHub Codespaces - no local setup required!
+
+1. Click the **Code** button at the top of this repository
+2. Select the **Codespaces** tab
+3. Click **Create codespace on main** (or your preferred branch)
+4. Wait 2-3 minutes for the environment to initialize
+5. The application will start automatically:
+   - **Frontend**: Opens automatically in your browser on port 9050
+   - **Backend API**: Running on port 8000
+   - **MySQL Database**: Running on port 3307
+
+**That's it!** You now have a fully functional development environment with:
+- ✅ All dependencies pre-installed (Rust, Node.js, yarn, just)
+- ✅ Both frontend and backend running with hot-reload
+- ✅ No manual configuration needed
+
+**Useful tips:**
+- Stop services: Press `Ctrl+C` in the terminal
+- Restart services: Run `just dev` in a new terminal
+- All logs are visible directly in the terminal output
+
+### 💻 Local Development
+
 Almost all tasks involved with building or running the code can be found in `Justfile`s throughout the project.  They can be run using the [just command runner](https://github.com/casey/just).
 
 ![A screenshot of Spotifytrack showing the artist relationship graph, an interactive visualization of the relationship between a user's top artists](https://ameo.link/u/98t.png)
