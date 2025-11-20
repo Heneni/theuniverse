@@ -22,25 +22,22 @@ const CompareToLanding: React.FC = () => {
         </div>
       </Link>
       <h1>
-        Compare your musical taste to{' '}
-        <span style={{ color: colors.pink, whiteSpace: 'nowrap' }}>{displayName ?? '...'}</span>
+        Music Taste Comparison{' '}
+        <span style={{ color: colors.pink, whiteSpace: 'nowrap' }}>(Demo Mode)</span>
       </h1>
 
       <div className="content-embed">
         <p>
-          Connect your Spotify account to Spotifytrack to visualize the overlap in artists and
-          tracks and generate a shared taste playlist.
+          This is a demo version using pre-loaded listening data from a CSV file.
+          The comparison feature is not available in demo mode as it requires personal Spotify data.
         </p>
         <p>
-          100% free, no caveats - just cool data! Only your Spotify listening data is obtained; no
-          access to your account is granted.
+          <strong>Note:</strong> This demo uses static data and does not connect to Spotify.
         </p>
 
         <div style={{ textAlign: 'center' }}>
-          <Link
-            to={`/connect?state=${encodeURIComponent(JSON.stringify({ compare_to: username }))}`}
-          >
-            <button className="big-button">Connect to Spotify</button>
+          <Link to="/stats/demo">
+            <button className="big-button">View Demo Stats</button>
           </Link>
         </div>
       </div>
