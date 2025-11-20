@@ -52,3 +52,5 @@ arrow-array = { version = "52.0", default-features = false, features = [] }
 object_store = { version = "0.10", features = ["aws"] }
 
 dashmap = "6.0"
+
+csv = "1.3"

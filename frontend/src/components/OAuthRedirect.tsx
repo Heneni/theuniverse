@@ -1,15 +1,17 @@
 import React from 'react';
-import { useLocation } from 'react-router';
-
-import { API_BASE_URL } from 'src/conf';
+import { useHistory } from 'react-router';
 
 const OAuthRedirect: React.FC = () => {
-  const { search } = useLocation();
-  window.location.href = `${API_BASE_URL}/authorize${search}`;
+  const history = useHistory();
+
+  // Since we're using local CSV data, redirect to demo stats page instead
+  React.useEffect(() => {
+    history.push('/stats/demo');
+  }, [history]);
 
   return (
     <div style={{ textAlign: 'center', fontSize: 20 }}>
-      You are being redirected to Spotify in order to obtain access to your listening data
+      Redirecting to demo user stats (using pre-loaded CSV data)...
     </div>
   );
 };

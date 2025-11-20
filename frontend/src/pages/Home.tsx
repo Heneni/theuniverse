@@ -11,27 +11,27 @@ import { getSentry } from 'src/sentry';
 const Home: React.FC<ReactRouterRouteProps> = () => (
   <main className="home">
     <h1>Spotifytrack</h1>
-    <h2>Hub for Spotify Stats Tracking + Musical Taste Analysis</h2>
+    <h2>Demo: Spotify Stats Tracking + Musical Taste Analysis</h2>
 
     <div className="description-container">
       <p className="description">
-        Spotifytrack is a tool that allows you to look back on your listening history on Spotify. It
-        collects and records your stats, keeping track of which tracks you listen to, the first time
-        you find new artists, how your genre preferences change over time, and more.
+        This is a demo version of Spotifytrack using pre-loaded listening history data from a CSV file.
+        Explore features like viewing top tracks and artists across different time periods,
+        discovering when you first listened to your favorite music, and analyzing genre preferences over time.
       </p>
       <p>
-        It&apos;s 100% free to use, takes seconds to set up, and automatically updates your stats
-        every day. To start, just click &apos;Connect to Spotify&apos;!
+        <strong>Note:</strong> This demo uses static data from a local CSV file and does not connect to Spotify.
+        All displayed statistics are based on historical listening data.
       </p>
     </div>
 
     <div className="buttons-container">
-      <Link to="/connect">
-        <button className="big-button">Connect to Spotify</button>
+      <Link to="/stats/demo">
+        <button className="big-button">View Demo Stats</button>
       </Link>
 
-      <Link to="/stats/ameobea">
-        <button className="big-button">View Example User Profile</button>
+      <Link to="/stats/demo">
+        <button className="big-button">Explore Features</button>
       </Link>
     </div>
 
