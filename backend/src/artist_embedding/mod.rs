@@ -310,12 +310,24 @@ pub async fn init_artist_embedding_ctx(positions_url: &str) {
         "Initializing artist embedding ctx.  Fetching pre-computed positions from URL={}...",
         positions_url
     );
-    let raw_positions: String = reqwest::get(positions_url)
-        .await
-        .unwrap()
-        .text()
-        .await
-        .unwrap();
+    
+    // Try to fetch the artist embedding data, but don't panic if it fails
+    // This allows the server to start in local development mode without external dependencies
+    let raw_positions_result = reqwest::get(positions_url).await;
+    let raw_positions = match raw_positions_result {
+        Ok(response) => match response.text().await {
+            Ok(text) => text,
+            Err(e) => {
+                eprintln!("Warning: Failed to fetch artist embedding positions text: {}. Artist embedding features will be unavailable.", e);
+                return;
+            }
+        },
+        Err(e) => {
+            eprintln!("Warning: Failed to fetch artist embedding positions from {}: {}. Artist embedding features will be unavailable.", positions_url, e);
+            return;
+        }
+    };
+    
     println!("Successfully fetched artist embedding positions.  Parsing...");
     let artist_position_by_id = parse_positions(&raw_positions);
     println!("Successfully parsed artist embedding positions.  Setting into global context.");

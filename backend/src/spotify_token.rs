@@ -12,9 +12,16 @@ impl SpotifyTokenData {
             token: "".into(),
             expiry: chrono::Local::now(),
         };
-        s.refresh()
-            .await
-            .expect("Failed to fetch initial spotify token for Rocket managed state");
+        // Try to fetch initial token, but don't panic if it fails
+        // This allows the server to start in local development mode with CSV data only
+        match s.refresh().await {
+            Ok(_) => {
+                info!("Successfully fetched initial Spotify token");
+            }
+            Err(e) => {
+                eprintln!("Warning: Failed to fetch initial Spotify token: {}. Spotify API features will be unavailable.", e);
+            }
+        }
         s
     }
 
