@@ -51,7 +51,7 @@ dev:
       echo "REDIS_URL=\"redis://localhost:6379\""
       echo "ADMIN_API_TOKEN=\"local_dev_token\""
       echo "TELEMETRY_SERVER_PORT=\"4101\""
-      echo "ROCKET_DATABASES=\"{ spotify_homepage = { url = \\\"mysql://spotifytrack:spotifytrack@localhost:3307/spotifytrack\\\" } }\""
+      echo "ROCKET_DATABASES=\"{ spotify_homepage = { url = \\\"mysql://spotifytrack:spotifytrack@127.0.0.1:3307/spotifytrack\\\" } }\""
     } > backend/.env
     echo "✓ Created backend/.env with dummy values for local development"
   fi
@@ -100,8 +100,9 @@ dev:
   echo $BACKEND_PID > $BACKEND_PID_FILE
   cd ..
   
-  # Give the backend a moment to start
-  sleep 2
+  # Give the backend time to compile and start (longer for first run)
+  echo "⏳ Waiting for backend to initialize (this may take a minute on first run)..."
+  sleep 5
   
   # Check if backend is still running
   if ! kill -0 $BACKEND_PID 2>/dev/null; then
@@ -110,6 +111,7 @@ dev:
   fi
   
   echo "✓ Backend started (PID: $BACKEND_PID)"
+  echo "   Note: Backend output will appear interspersed with frontend output"
   echo ""
   
   # Install frontend dependencies if needed
