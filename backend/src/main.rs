@@ -44,7 +44,17 @@ pub struct DbConn(diesel::MysqlConnection);
 
 #[rocket::main]
 pub async fn main() {
-    dotenv::dotenv().expect("dotenv file parsing failed");
+    // Load .env if it exists, but don't fail if it doesn't (for CSV-only mode)
+    match dotenv::dotenv() {
+        Ok(_) => info!("Loaded .env file"),
+        Err(e) => {
+            if matches!(e, dotenv::Error::Io(ref io_err) if io_err.kind() == std::io::ErrorKind::NotFound) {
+                warn!("No .env file found, using environment variables only");
+            } else {
+                panic!("Error parsing .env file: {:?}", e);
+            }
+        }
+    }
 
     let tele_serv_fut = foundations::telemetry::init_with_server(
         &foundations::service_info!(),
