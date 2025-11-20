@@ -35,9 +35,9 @@ The easiest way to try Spotifytrack is using GitHub Codespaces - no local setup 
 - ✅ No manual configuration needed
 
 **Useful tips:**
-- View live logs: `tail -f /tmp/dev.log`
-- Restart services: Run `just dev` in the terminal
-- Stop services: Press `Ctrl+C` in the terminal running the dev servers
+- Stop services: Press `Ctrl+C` in the terminal
+- Restart services: Run `just dev` in a new terminal
+- All logs are visible directly in the terminal output
 
 ### 💻 Local Development
 
