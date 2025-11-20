@@ -58,8 +58,8 @@
   // Use 'postCreateCommand' to install dependencies after container is created
   "postCreateCommand": "bash .devcontainer/post-create.sh",
 
-  // Use 'postStartCommand' to start the dev environment automatically
-  "postStartCommand": "bash .devcontainer/post-start.sh",
+  // Display welcome message on start
+  "postStartCommand": "bash .devcontainer/welcome.sh",
 
   // Set environment variables
   "remoteEnv": {
