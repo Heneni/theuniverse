@@ -1,32 +1,51 @@
 import * as Comlink from 'comlink';
 
 export class WasmClient {
-  private engine: typeof import('./engine');
-  private ctxPtr: number;
+  private engine: typeof import('./engine') | null = null;
+  private ctxPtr: number | null = null;
+  private initError: Error | null = null;
 
   constructor() {
-    import('./engine').then((engine) => {
-      this.engine = engine;
-      this.ctxPtr = engine.create_artist_map_ctx();
-    });
+    import('./engine')
+      .then((engine) => {
+        this.engine = engine;
+        try {
+          this.ctxPtr = engine.create_artist_map_ctx();
+        } catch (err) {
+          console.warn('Failed to initialize WASM engine. Music Galaxy feature will not be available.');
+          this.initError = err as Error;
+        }
+      })
+      .catch((err) => {
+        console.error('Failed to load WASM engine module:', err);
+        this.initError = err;
+      });
   }
 
   /**
    * Returns the total number of artists in the embedding
    */
   public decodeAndRecordPackedArtistPositions(packed: Uint8Array, isMobile: boolean) {
-    this.engine.decode_and_record_packed_artist_positions(this.ctxPtr, packed, isMobile);
+    this.ensureInitialized();
+    this.engine!.decode_and_record_packed_artist_positions(this.ctxPtr!, packed, isMobile);
 
     return this.getArtistColorsByID();
   }
 
   public getAllArtistData(): Float32Array {
-    const allArtistData = this.engine.get_all_artist_data(this.ctxPtr);
+    this.ensureInitialized();
+    const allArtistData = this.engine!.get_all_artist_data(this.ctxPtr!);
     return Comlink.transfer(allArtistData, [allArtistData.buffer]);
   }
 
   public isReady() {
-    return !!this.engine && !!this.ctxPtr;
+    return !!this.engine && !!this.ctxPtr && !this.initError;
+  }
+
+  private ensureInitialized() {
+    if (!this.engine || !this.ctxPtr) {
+      throw new Error('WASM engine not initialized');
+    }
   }
 
   /**
@@ -41,8 +60,9 @@ export class WasmClient {
     projectedNextZ: number,
     isFlyMode: boolean
   ) {
-    const drawCommands = this.engine.handle_new_position(
-      this.ctxPtr,
+    this.ensureInitialized();
+    const drawCommands = this.engine!.handle_new_position(
+      this.ctxPtr!,
       x,
       y,
       z,
@@ -64,8 +84,9 @@ export class WasmClient {
     curZ: number,
     isFlyMode: boolean
   ) {
-    const drawCommands = this.engine.handle_received_artist_names(
-      this.ctxPtr,
+    this.ensureInitialized();
+    const drawCommands = this.engine!.handle_received_artist_names(
+      this.ctxPtr!,
       artistIDs,
       curX,
       curY,
@@ -79,8 +100,9 @@ export class WasmClient {
    * Returns set of draw commands to execute
    */
   public onMusicFinishedPlaying(artistID: number, [curX, curY, curZ]: [number, number, number]) {
-    const drawCommands = this.engine.on_music_finished_playing(
-      this.ctxPtr,
+    this.ensureInitialized();
+    const drawCommands = this.engine!.on_music_finished_playing(
+      this.ctxPtr!,
       artistID,
       curX,
       curY,
@@ -90,20 +112,22 @@ export class WasmClient {
   }
 
   private getConnectionsBuffer(): Float32Array {
-    const connectionsBufferPtr = this.engine.get_connections_buffer_ptr(this.ctxPtr);
-    const connectionsBufferLength = this.engine.get_connections_buffer_length(this.ctxPtr);
-    const memory: WebAssembly.Memory = this.engine.get_memory();
+    this.ensureInitialized();
+    const connectionsBufferPtr = this.engine!.get_connections_buffer_ptr(this.ctxPtr!);
+    const connectionsBufferLength = this.engine!.get_connections_buffer_length(this.ctxPtr!);
+    const memory: WebAssembly.Memory = this.engine!.get_memory();
     return new Float32Array(
       memory.buffer.slice(connectionsBufferPtr, connectionsBufferPtr + connectionsBufferLength * 4)
     );
   }
 
   private getConnectionsColorBuffer(): Uint8ClampedArray {
-    const connectionsColorBufferPtr = this.engine.get_connections_color_buffer_ptr(this.ctxPtr);
-    const connectionsColorBufferLength = this.engine.get_connections_color_buffer_length(
-      this.ctxPtr
+    this.ensureInitialized();
+    const connectionsColorBufferPtr = this.engine!.get_connections_color_buffer_ptr(this.ctxPtr!);
+    const connectionsColorBufferLength = this.engine!.get_connections_color_buffer_length(
+      this.ctxPtr!
     );
-    const memory: WebAssembly.Memory = this.engine.get_memory();
+    const memory: WebAssembly.Memory = this.engine!.get_memory();
     return new Uint8ClampedArray(
       memory.buffer.slice(
         connectionsColorBufferPtr,
@@ -120,7 +144,8 @@ export class WasmClient {
     chunkSize: number,
     chunkIx: number
   ): { connectionsBuffer: Float32Array; connectionsColorBuffer: Uint8ClampedArray } {
-    this.engine.handle_artist_relationship_data(this.ctxPtr, relationshipData, chunkSize, chunkIx);
+    this.ensureInitialized();
+    this.engine!.handle_artist_relationship_data(this.ctxPtr!, relationshipData, chunkSize, chunkIx);
 
     const connectionsBuffer = this.getConnectionsBuffer();
     const connectionsColorBuffer = this.getConnectionsColorBuffer();
@@ -137,8 +162,9 @@ export class WasmClient {
     curZ: number,
     isFlyMode: boolean
   ) {
-    const drawCommands = this.engine.handle_set_highlighted_artists(
-      this.ctxPtr,
+    this.ensureInitialized();
+    const drawCommands = this.engine!.handle_set_highlighted_artists(
+      this.ctxPtr!,
       artistIDs,
       curX,
       curY,
@@ -149,7 +175,8 @@ export class WasmClient {
   }
 
   public handleArtistManualPlay(artistID: number) {
-    const drawCommands = this.engine.handle_artist_manual_play(this.ctxPtr, artistID);
+    this.ensureInitialized();
+    const drawCommands = this.engine!.handle_artist_manual_play(this.ctxPtr!, artistID);
     return Comlink.transfer(drawCommands, [drawCommands.buffer]);
   }
 
@@ -157,8 +184,9 @@ export class WasmClient {
     intra: Float32Array;
     inter: Float32Array;
   } {
-    const intra = this.engine.get_connections_for_artists(this.ctxPtr, highlightedArtistIDs, true);
-    const inter = this.engine.get_connections_for_artists(this.ctxPtr, highlightedArtistIDs, false);
+    this.ensureInitialized();
+    const intra = this.engine!.get_connections_for_artists(this.ctxPtr!, highlightedArtistIDs, true);
+    const inter = this.engine!.get_connections_for_artists(this.ctxPtr!, highlightedArtistIDs, false);
 
     return {
       intra: Comlink.transfer(intra, [intra.buffer]),
@@ -172,11 +200,13 @@ export class WasmClient {
    * Returns set of draw commands to execute
    */
   public transitionToOrbitMode(): Uint32Array {
-    return this.engine.transition_to_orbit_mode(this.ctxPtr);
+    this.ensureInitialized();
+    return this.engine!.transition_to_orbit_mode(this.ctxPtr!);
   }
 
   public forceRenderArtistLabel(artistID: number): Uint32Array {
-    return this.engine.force_render_artist_label(this.ctxPtr, artistID);
+    this.ensureInitialized();
+    return this.engine!.force_render_artist_label(this.ctxPtr!, artistID);
   }
 
   /**
@@ -186,7 +216,8 @@ export class WasmClient {
     connectionsBuffer: Float32Array;
     connectionsColorBuffer: Uint8ClampedArray;
   } {
-    this.engine.set_quality(this.ctxPtr, newQuality);
+    this.ensureInitialized();
+    this.engine!.set_quality(this.ctxPtr!, newQuality);
     const connectionsBuffer = this.getConnectionsBuffer();
     const connectionsColorBuffer = this.getConnectionsColorBuffer();
     return Comlink.transfer({ connectionsBuffer, connectionsColorBuffer }, [
@@ -199,13 +230,15 @@ export class WasmClient {
    * Returns set of draw commands to execute
    */
   public playLastArtist(): Uint32Array {
-    return this.engine.play_last_artist(this.ctxPtr);
+    this.ensureInitialized();
+    return this.engine!.play_last_artist(this.ctxPtr!);
   }
 
   public getArtistColorsByID(): Map<number, readonly [number, number, number]> {
-    const artistColorsBufferPtr = this.engine.get_artist_colors_buffer_ptr(this.ctxPtr);
-    const artistColorsBufferLength = this.engine.get_artist_colors_buffer_length(this.ctxPtr);
-    const memory: WebAssembly.Memory = this.engine.get_memory();
+    this.ensureInitialized();
+    const artistColorsBufferPtr = this.engine!.get_artist_colors_buffer_ptr(this.ctxPtr!);
+    const artistColorsBufferLength = this.engine!.get_artist_colors_buffer_length(this.ctxPtr!);
+    const memory: WebAssembly.Memory = this.engine!.get_memory();
     const artistColorsBuffer = new Float32Array(
       memory.buffer.slice(
         artistColorsBufferPtr,
