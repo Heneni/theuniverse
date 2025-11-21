@@ -26,19 +26,15 @@ export class WasmClient {
    * Returns the total number of artists in the embedding
    */
   public decodeAndRecordPackedArtistPositions(packed: Uint8Array, isMobile: boolean) {
-    if (!this.engine || !this.ctxPtr) {
-      throw new Error('WASM engine not initialized');
-    }
-    this.engine.decode_and_record_packed_artist_positions(this.ctxPtr, packed, isMobile);
+    this.ensureInitialized();
+    this.engine!.decode_and_record_packed_artist_positions(this.ctxPtr!, packed, isMobile);
 
     return this.getArtistColorsByID();
   }
 
   public getAllArtistData(): Float32Array {
-    if (!this.engine || !this.ctxPtr) {
-      throw new Error('WASM engine not initialized');
-    }
-    const allArtistData = this.engine.get_all_artist_data(this.ctxPtr);
+    this.ensureInitialized();
+    const allArtistData = this.engine!.get_all_artist_data(this.ctxPtr!);
     return Comlink.transfer(allArtistData, [allArtistData.buffer]);
   }
 
