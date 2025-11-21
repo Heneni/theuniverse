@@ -1,0 +1,42 @@
+name: Convert XLSX to JSON
+
+on:
+  push:
+    branches:
+      - csv-static-frontend
+    paths:
+      - 'backend/listening_history.xlsx'
+  workflow_dispatch:
+
+jobs:
+  convert:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '18'
+
+      - name: Install xlsx
+        run: npm install xlsx@0.18.5
+
+      - name: Run converter
+        run: |
+          node scripts/xlsx-to-json.js backend/listening_history.xlsx frontend/public/listening_history.json
+
+      - name: Commit and push generated JSON
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          mkdir -p frontend/public
+          if [ -f frontend/public/listening_history.json ]; then
+            git add frontend/public/listening_history.json
+            git commit -m "Auto: generate listening_history.json from xlsx" || echo "No changes to commit"
+            git push origin HEAD:csv-static-frontend
+          else
+            echo "JSON not generated; skipping commit."
